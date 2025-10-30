@@ -1,2 +1,2 @@
 # IoT-Dashboard
-Simple dashboard for interaction with IoT devices
+Simple dashboard for interaction with IoT devices via MQTT
