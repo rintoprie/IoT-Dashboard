@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MQTT WebSocket – Publish Button</title>
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <style>
+    :root { --bg:#ffffff; --panel:#ffffff; --card:#ffffff; --text:#111111; --muted:#9aa7c7; --accent:#5fb3ff; --ok:#3ddc84; --warn:#ffe08a; }
+    *{box-sizing:border-box}
+    body{margin:0;padding:24px;font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Arial;background:var(--bg);color:var(--text)}
+    .wrap{max-width:720px;margin:0 auto}
+    h1{font-size:20px;margin:0 0 16px}
+    .panel{background:var(--panel);border:1px solid #182552;border-radius:16px;padding:16px;margin-bottom:16px}
+    .grid{display:grid;grid-template-columns:1fr 160px;gap:10px;align-items:end}
+    label{font-size:12px;color:var(--muted);display:block;margin-bottom:6px}
+    input, select{width:100%;padding:10px 12px;border-radius:12px;border:1px solid #2a396b;background:#ffffff;color:var(--text);outline:none}
+    input::placeholder{color:#6273a3}
+    button{padding:10px 14px;border-radius:12px;border:1px solid #2a396b;background:#ffffff;color:var(--text);cursor:pointer}
+    button:hover{border-color:#36509a}
+    button:disabled{opacity:.6;cursor:not-allowed}
+    .row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+    .rows-grid{display:grid;grid-template-columns:1fr 1fr auto;gap:10px;align-items:end;margin-bottom:8px}
+    .status{display:inline-block;padding:6px 10px;border-radius:999px;border:1px solid #2a396b;margin-left:8px}
+    .ok{background:#ffffff;color:#1e6944;border-color:#1e6944}
+    .warn{background:#ffffff;color:#6b5500;border-color:#6b5500}
+    .offline{background:#ffffff;color:#1a2447}
+    .log{background:#ffffff;border:1px solid #1a2a57;border-radius:16px;padding:14px;min-height:80px;white-space:pre-wrap}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>MQTT WebSocket – Publish Button <span id="status" class="status offline">Offline</span></h1>
+
+    <div class="panel">
+      <div class="grid" style="margin-bottom:10px">
+        <div>
+          <label for="broker">Broker URL</label>
+          <input id="broker" type="url" placeholder="wss://host:port/mqtt" value="ws://192.168.8.151:9001" />
+        </div>
+        <button id="connectBtn">Connect</button>
+      </div>
+<div style="display: none;">
+      <div class="row" style="margin-bottom:10px">
+        <div>
+          <label for="topic">Topic</label>
+          <input id="topic" type="text" placeholder="my/test/topic" value="sensor/temperature" />
+        </div>
+        <div>
+          <label for="qos">QoS</label>
+          <select id="qos">
+            <option value="0" selected>0 - At most once</option>
+            <option value="1">1 - At least once</option>
+            <option value="2">2 - Exactly once</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="grid">
+        <div>
+          <label for="payload">Payload</label>
+          <input id="payload" type="text" placeholder='{"hello":"world"} or plain text' value="24" />
+        </div>
+        <div>
+          <label>&nbsp;</label>
+          <button id="publishBtn" disabled>▶ Publish</button>
+        </div>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <div>
+          <label for="presetSelect">Presets (Topic + Payload)</label>
+          <select id="presetSelect"></select>
+        </div>
+        <div style="display:flex; gap:10px; align-items:end">
+          <button id="applyPresetBtn">Apply</button>
+          <button id="publishPresetBtn" disabled>Publish Preset</button>
+        </div>
+      </div>
+</div>
+      <div class="row" style="margin-top:10px">
+        <div style="grid-column:1/-1">
+          <label>Multiple Rows (Topic + Payload)</label>
+          <div id="rows"></div>
+          <button id="addRowBtn" style="margin-top:8px">+ Add Row</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="log" id="log">Ready.</div>
+
+    <p style="color:var(--muted);font-size:12px">Tip: Mosquitto WebSocket lokal biasa di <code>ws://localhost:9001/mqtt</code> (aktifkan listener WebSocket di <code>mosquitto.conf</code>).</p>
+  </div>
+
+  <script>
+    let client = null;
+
+    const statusEl = document.getElementById('status');
+    const brokerEl = document.getElementById('broker');
+    const topicEl = document.getElementById('topic');
+    const qosEl = document.getElementById('qos');
+    const payloadEl = document.getElementById('payload');
+    const connectBtn = document.getElementById('connectBtn');
+    const publishBtn = document.getElementById('publishBtn');
+    const logEl = document.getElementById('log');
+    const presetSelect = document.getElementById('presetSelect');
+    const applyPresetBtn = document.getElementById('applyPresetBtn');
+    const publishPresetBtn = document.getElementById('publishPresetBtn');
+    const rowsWrap = document.getElementById('rows');
+    const addRowBtn = document.getElementById('addRowBtn');
+
+    const PRESETS = [
+      { label: 'Temperature 24', topic: 'sensor/temperature', payload: '24' },
+      { label: 'Humidity 60', topic: 'sensor/humidity', payload: '60' },
+      { label: 'Relay ON', topic: 'actuator/relay/1', payload: 'ON' },
+      { label: 'Relay OFF', topic: 'actuator/relay/1', payload: 'OFF' },
+    ];
+
+    function populatePresets(){
+      if(!presetSelect) return;
+      presetSelect.innerHTML = PRESETS.map((p,i)=>`<option value="${i}">${p.label} — ${p.topic} :: ${p.payload}</option>`).join('');
+      presetSelect.value = '0';
+    }
+
+    function applyPreset(){
+      const p = PRESETS[Number(presetSelect.value)];
+      if(!p) return;
+      topicEl.value = p.topic;
+      payloadEl.value = p.payload;
+      log('Applied preset: ' + p.label);
+    }
+
+    function publishPreset(){
+      if(!client || !client.connected){ alert('Not connected'); return; }
+      applyPreset();
+      publishNow();
+    }
+
+    if (applyPresetBtn) applyPresetBtn.addEventListener('click', applyPreset);
+    if (publishPresetBtn) publishPresetBtn.addEventListener('click', publishPreset);
+
+    // Initialize presets on load
+    populatePresets();
+
+    // --- Multi rows (topic + payload + publish) ---
+    function createRow(topic = '', payload = ''){
+      if(!rowsWrap) return;
+      const row = document.createElement('div');
+      row.className = 'rows-grid';
+      row.innerHTML = `
+        <div>
+          <label>Topic</label>
+          <input type="text" class="row-topic" placeholder="my/topic" value="${topic}">
+        </div>
+        <div>
+          <label>Payload</label>
+          <input type="text" class="row-payload" placeholder="value" value="${payload}">
+        </div>
+        <div>
+          <label>&nbsp;</label>
+          <button class="row-publish" disabled>Publish</button>
+        </div>`;
+      rowsWrap.appendChild(row);
+
+      const pubBtn = row.querySelector('.row-publish');
+      const topicInput = row.querySelector('.row-topic');
+      const payloadInput = row.querySelector('.row-payload');
+
+      // enable/disable based on connection state
+      pubBtn.disabled = !(client && client.connected);
+
+      pubBtn.addEventListener('click', () => {
+        if(!client || !client.connected){ alert('Not connected'); return; }
+        const t = topicInput.value.trim();
+        if(!t){ alert('Enter a topic'); return; }
+        const p = String(payloadInput.value ?? '');
+        const options = { qos: Number(qosEl.value), retain: false };
+        client.publish(t, p, options, (err) => {
+          if(err){ log('Publish error: ' + err); return; }
+          log(`Published (row) to ${t} (QoS ${options.qos}).`);
+        });
+      });
+    }
+
+    if (addRowBtn) addRowBtn.addEventListener('click', () => createRow());
+    if (rowsWrap){
+      createRow('sensor/temperature','24');
+      createRow('sensor/humidity','60');
+      createRow('actuator/relay/1','ON');
+    }
+
+    function setStatus(text, mode){
+      statusEl.textContent = text;
+      statusEl.className = 'status ' + (mode || 'offline');
+      publishBtn.disabled = mode !== 'ok';
+      if (typeof publishPresetBtn !== 'undefined') publishPresetBtn.disabled = mode !== 'ok';
+      document.querySelectorAll('.row-publish').forEach(btn => btn.disabled = mode !== 'ok');
+    }
+
+    function log(msg){
+      const t = new Date().toLocaleString();
+      logEl.textContent = `[${t}] ${msg}`;
+    }
+
+    function connect(){
+      const url = brokerEl.value.trim();
+      if(!url){ alert('Please enter a Broker URL'); return; }
+      if(client){ try{ client.end(true); }catch(_){} client = null; }
+
+      const clientId = 'pub_' + Math.random().toString(16).slice(2,10);
+      client = mqtt.connect(url, {
+        clientId,
+        clean: true,
+        connectTimeout: 5000,
+        reconnectPeriod: 1000,
+      });
+
+      setStatus('Connecting…', 'warn');
+      log('Connecting to ' + url + ' ...');
+
+      client.on('connect', () => {
+        setStatus('Connected', 'ok');
+        log('Connected. Ready to publish.');
+        connectBtn.textContent = 'Disconnect';
+      });
+
+      client.on('reconnect', () => setStatus('Reconnecting…', 'warn'));
+      client.on('close', () => { setStatus('Offline', 'offline'); connectBtn.textContent = 'Connect'; });
+      client.on('error', (err) => { setStatus('Error', 'warn'); log('Error: ' + (err && err.message ? err.message : err)); });
+    }
+
+    function disconnect(){
+      if(client){ try{ client.end(true); }catch(_){} client = null; }
+      setStatus('Offline', 'offline');
+      log('Disconnected.');
+      connectBtn.textContent = 'Connect';
+    }
+
+    function publishNow(){
+      if(!client || !client.connected){ alert('Not connected'); return; }
+      const topic = topicEl.value.trim();
+      if(!topic){ alert('Enter a topic'); return; }
+      let payload = payloadEl.value;
+
+      // Try to keep JSON if valid, otherwise publish as string
+      try{ JSON.parse(payload); }catch{ /* leave as string */ }
+
+      const options = { qos: Number(qosEl.value), retain: false };
+      client.publish(topic, payload, options, (err) => {
+        if(err){ log('Publish error: ' + err); return; }
+        log(`Published to ${topic} (QoS ${options.qos}).`);
+      });
+    }
+
+    connectBtn.addEventListener('click', () => {
+      if(client && client.connected){
+        disconnect();
+      } else {
+        connect();
+      }
+    });
+
+    publishBtn.addEventListener('click', publishNow);
+
+    // Optional: Enter to publish when focused on payload
+    payloadEl.addEventListener('keydown', (e) => {
+      if(e.key === 'Enter') publishNow();
+    });
+  </script>
+</body>
+</html>

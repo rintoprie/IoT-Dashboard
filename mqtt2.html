@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MQTT WebSocket – Publish Button</title>
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <style>
+    :root { --bg:#ffffff; --panel:#ffffff; --card:#ffffff; --text:#111111; --muted:#9aa7c7; --accent:#5fb3ff; --ok:#3ddc84; --warn:#ffe08a; }
+    *{box-sizing:border-box}
+    body{margin:0;padding:24px;font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Arial;background:var(--bg);color:var(--text)}
+    .wrap{max-width:720px;margin:0 auto}
+    h1{font-size:20px;margin:0 0 16px}
+    .panel{background:var(--panel);border:1px solid #182552;border-radius:16px;padding:16px;margin-bottom:16px}
+    .grid{display:grid;grid-template-columns:1fr 160px;gap:10px;align-items:end}
+    label{font-size:12px;color:var(--muted);display:block;margin-bottom:6px}
+    input, select{width:100%;padding:10px 12px;border-radius:12px;border:1px solid #2a396b;background:#ffffff;color:var(--text);outline:none}
+    input::placeholder{color:#6273a3}
+    button{padding:10px 14px;border-radius:12px;border:1px solid #2a396b;background:#ffffff;color:var(--text);cursor:pointer}
+    button:hover{border-color:#36509a}
+    button:disabled{opacity:.6;cursor:not-allowed}
+    .row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+    .rows-grid{display:grid;grid-template-columns:1fr 1fr auto;gap:10px;align-items:end;margin-bottom:8px}
+    .status{display:inline-block;padding:6px 10px;border-radius:999px;border:1px solid #2a396b;margin-left:8px}
+    .ok{background:#ffffff;color:#1e6944;border-color:#1e6944}
+    .warn{background:#ffffff;color:#6b5500;border-color:#6b5500}
+    .offline{background:#ffffff;color:#1a2447}
+    .log{background:#ffffff;border:1px solid #1a2a57;border-radius:16px;padding:14px;margin-bottom:16px;height:160px;white-space:pre-wrap;overflow: auto;}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>MQTT WebSocket Demo <span id="status" class="status offline">Offline</span></h1>
+
+    <div class="panel">
+      <div class="grid" style="margin-bottom:10px">
+        <div>
+          <label for="broker">Broker URL</label>
+          <input id="broker" type="url" placeholder="ws://host:port/mqtt" value="ws://test.mosquitto.org:8081/mqtt" />
+        </div>
+        <button id="connectBtn">Connect</button>
+      </div>
+    </div>
+    <div class="panel">
+
+    <div class="row" style="margin-top:10px">
+        <div style="grid-column:1/-1">
+          <label>MQTT Publish</label>
+            <div style="display: none;">
+            <label for="qos">QoS</label>
+            <select id="qos">
+                <option value="0" selected>0 - At most once</option>
+                <option value="1">1 - At least once</option>
+                <option value="2">2 - Exactly once</option>
+            </select>
+            </div>
+          <div id="rows"></div>
+          <button id="addRowBtn" style="margin-top:8px">+ Add Row</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="log" id="log">Ready.</div>
+
+    <div class="panel">
+    <div class="row" style="margin-top:10px">
+        <div style="grid-column:1/-1">
+          <label for="subTopic">Subscribe Topic</label>
+            <div class="rows-grid">
+                <div>
+                <label>Topic</label>
+                <input id="subTopic" type="text" placeholder="sensor/#" value="sensor/temperature" />
+                </div>
+                <div>
+                <label>QoS</label>
+                <select id="subQos">
+                    <option value="0" selected>0 - At most once</option>
+                    <option value="1">1 - At least once</option>
+                    <option value="2">2 - Exactly once</option>
+                </select>
+                </div>
+                <div>
+                <label>&nbsp;</label>
+                <button id="subscribeBtn" disabled>Subscribe</button>
+                <button id="unsubscribeBtn" disabled>Unsubscribe</button>
+                </div>
+            </div>
+        </div>
+    </div>
+      <div style="margin-top:12px">
+        <label>Inbox (incoming messages)</label>
+        <div id="inbox" class="log"></div>
+      </div>
+    </div>
+    <p style="color:var(--muted);font-size:12px">Tip: MQTT server bisa menggunakan <code>ws://test.mosquitto.org:8080</code> (cek website-nya untuk kombinasi URL dan port websocket unsecured) atau Mosquitto WebSocket lokal dengan URL <code>ws://localhost:9001/mqtt</code> (aktifkan listener WebSocket di <code>mosquitto.conf</code>).</p>
+  </div>
+
+  <script>
+    let client = null;
+
+    const statusEl = document.getElementById('status');
+    const brokerEl = document.getElementById('broker');
+    const connectBtn = document.getElementById('connectBtn');
+    const logEl = document.getElementById('log');
+    const rowsWrap = document.getElementById('rows');
+    const addRowBtn = document.getElementById('addRowBtn');
+    const qosEl = document.getElementById('qos');
+    const subTopicEl = document.getElementById('subTopic');
+    const subQosEl = document.getElementById('subQos');
+    const subscribeBtn = document.getElementById('subscribeBtn');
+    const unsubscribeBtn = document.getElementById('unsubscribeBtn');
+    const inboxEl = document.getElementById('inbox');
+    const ACTIVE_SUBS = new Map();
+
+    function setSubButtonsEnabled(on){
+      subscribeBtn.disabled = !on;
+      unsubscribeBtn.disabled = !on;
+    }
+
+    function createRow(topic = '', payload = ''){
+      if(!rowsWrap) return;
+      const row = document.createElement('div');
+      row.className = 'rows-grid';
+      row.innerHTML = `
+        <div>
+          <label>Topic</label>
+          <input type="text" class="row-topic" placeholder="my/topic" value="${topic}">
+        </div>
+        <div>
+          <label>Payload</label>
+          <input type="text" class="row-payload" placeholder="value" value="${payload}">
+        </div>
+        <div>
+          <label>&nbsp;</label>
+          <button class="row-publish" disabled>Publish</button>
+        </div>`;
+      rowsWrap.appendChild(row);
+
+      const pubBtn = row.querySelector('.row-publish');
+      const topicInput = row.querySelector('.row-topic');
+      const payloadInput = row.querySelector('.row-payload');
+
+      pubBtn.addEventListener('click', () => {
+        if(!client || !client.connected){ alert('Not connected'); return; }
+        const t = topicInput.value.trim();
+        if(!t){ alert('Enter a topic'); return; }
+        const p = String(payloadInput.value ?? '');
+        const options = { qos: Number(qosEl.value), retain: false };
+        client.publish(t, p, options, (err) => {
+          if(err){ log('Publish error: ' + err); return; }
+          log(`Published (row) to ${t} (QoS ${options.qos}).`);
+        });
+      });
+    }
+
+    if (addRowBtn) addRowBtn.addEventListener('click', () => createRow());
+    if (rowsWrap){
+      createRow('sensor/temperature','24');
+      createRow('actuator/relay/1','OFF');
+      createRow('system/info','Running');
+      createRow('system/notification','Error 204 Check Sensor 001');
+    }
+
+    function setStatus(text, mode){
+      statusEl.textContent = text;
+      statusEl.className = 'status ' + (mode || 'offline');
+      document.querySelectorAll('.row-publish').forEach(btn => btn.disabled = mode !== 'ok');
+    }
+
+    function log(msg){
+      const t = new Date().toLocaleString();
+      logEl.textContent = `[${t}] ${msg}`;
+    }
+
+    function connect(){
+      const url = brokerEl.value.trim();
+      if(!url){ alert('Please enter a Broker URL'); return; }
+      if(client){ try{ client.end(true); }catch(_){} client = null; }
+
+      const clientId = 'pub_' + Math.random().toString(16).slice(2,10);
+      client = mqtt.connect(url, {
+        clientId,
+        clean: true,
+        connectTimeout: 5000,
+        reconnectPeriod: 1000,
+      });
+
+      setStatus('Connecting…', 'warn');
+      log('Connecting to ' + url + ' ...');
+
+      client.on('connect', () => {
+        setStatus('Connected', 'ok');
+        setSubButtonsEnabled(true);
+        log('Connected. Ready to publish.');
+        connectBtn.textContent = 'Disconnect';
+      });
+
+      client.on('reconnect', () => setStatus('Reconnecting…', 'warn'));
+      client.on('close', () => { setStatus('Offline', 'offline'); connectBtn.textContent = 'Connect'; });
+      client.on('error', (err) => { setStatus('Error', 'warn'); log('Error: ' + (err && err.message ? err.message : err)); });
+      client.on('message', (topic, message, packet) => {
+        let payload = message ? message.toString() : '';
+        try { payload = JSON.stringify(JSON.parse(payload)); } catch {}
+        pushInbox(topic, payload, packet && packet.qos);
+      });
+    }
+
+    function disconnect(){
+      if(client){ try{ client.end(true); }catch(_){} client = null; }
+      setStatus('Offline', 'offline');
+      log('Disconnected.');
+      connectBtn.textContent = 'Connect';
+    }
+
+    connectBtn.addEventListener('click', () => {
+      if(client && client.connected){
+        disconnect();
+      } else {
+        connect();
+      }
+    });
+
+    function pushInbox(topic, payload, qos){
+      const t = new Date().toLocaleString();
+      const line = `[${t}] ${topic} (QoS ${qos}): ${payload}`;
+      const div = document.createElement('div');
+      div.textContent = line;
+      inboxEl.appendChild(div);
+      const MAX = 200;
+      while(inboxEl.childElementCount > MAX){ inboxEl.removeChild(inboxEl.firstChild); }
+      inboxEl.scrollTop = inboxEl.scrollHeight;
+    }
+
+    function subscribeNow(){
+      if(!client || !client.connected){ alert('Not connected'); return; }
+      const topic = subTopicEl.value.trim();
+      const qos = Number(subQosEl.value || 0);
+      if(!topic){ alert('Enter a subscribe topic'); return; }
+      client.subscribe(topic, { qos }, (err, granted) => {
+        if(err){ log('Subscribe error: ' + err); return; }
+        ACTIVE_SUBS.set(topic, qos);
+        const g = granted && granted[0] ? ` (granted QoS ${granted[0].qos})` : '';
+        log(`Subscribed to ${topic}${g}`);
+      });
+    }
+
+    function unsubscribeNow(){
+      if(!client || !client.connected){ alert('Not connected'); return; }
+      const topic = subTopicEl.value.trim();
+      if(!topic){ alert('Enter a topic to unsubscribe'); return; }
+      client.unsubscribe(topic, (err) => {
+        if(err){ log('Unsubscribe error: ' + err); return; }
+        ACTIVE_SUBS.delete(topic);
+        log(`Unsubscribed from ${topic}`);
+      });
+    }
+
+    subscribeBtn.addEventListener('click', subscribeNow);
+    unsubscribeBtn.addEventListener('click', unsubscribeNow);
+
+  </script>
+</body>
+</html>
